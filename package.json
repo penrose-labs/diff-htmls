@@ -1,5 +1,5 @@
 {
-	"name": "diff-htmls",
+	"name": "@penrose-labs/diff-htmls",
 	"version": "0.0.1",
 	"description": "Fork of [html-diff-ts](https://github.com/ericmakesapps/html-diff-ts), which is a TypeScript port of [HtmlDiff.NET](https://github.com/Rohland/htmldiff.net) which is itself a C# port of the Ruby implementation, [HtmlDiff](https://github.com/myobie/htmldiff/).",
 	"types": "./lib/cjs/types/index.d.ts",
@@ -19,7 +19,7 @@
 	},
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/ericmakesapps/diff-htmls.git"
+		"url": "git+https://github.com/penrose-labs/diff-htmls.git"
 	},
 	"exports": {
 		".": {
@@ -39,10 +39,6 @@
 		"Eric Ferreira <eric@ericmakesapps.com>"
 	],
 	"license": "ISC",
-	"bugs": {
-		"url": "https://github.com/ericmakesapps/diff-htmls/issues"
-	},
-	"homepage": "https://github.com/ericmakesapps/diff-htmls#readme",
 	"devDependencies": {
 		"@prettier/plugin-xml": "^3.4.1",
 		"@trivago/prettier-plugin-sort-imports": "^5.2.2",
