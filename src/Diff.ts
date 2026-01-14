@@ -1,8 +1,9 @@
-﻿import Match from "./Match"
+import BlockAnalyzer, { Block } from "./BlockAnalyzer"
+import Match from "./Match"
 import MatchFinder from "./MatchFinder"
 import MatchOptions from "./MatchOptions"
 import Operation from "./Operation"
-import { Action, BlockExpression } from "./types"
+import { Action, BlockDiffOptions, BlockExpression } from "./types"
 import * as Utils from "./Utils"
 import WordSplitter from "./WordSplitter"
 
@@ -33,6 +34,10 @@ type FindMathProps = {
 	endInNew: number
 }
 
+type HtmlDiffOptions = {
+	blockDiff?: BlockDiffOptions
+}
+
 class HtmlDiff {
 	private content: string[]
 	private newText: string
@@ -51,7 +56,13 @@ class HtmlDiff {
 	private ignoreWhiteSpaceDifferences: boolean
 	private orphanMatchThreshold: number
 
-	constructor(oldText: string, newText: string) {
+	// Block-aware diffing
+	private blockDiffOptions?: BlockDiffOptions
+	private blockAnalyzer?: BlockAnalyzer
+	private oldBlocks: Block[] = []
+	private newBlocks: Block[] = []
+
+	constructor(oldText: string, newText: string, options?: HtmlDiffOptions) {
 		this.content = []
 		this.newText = newText
 		this.oldText = oldText
@@ -68,6 +79,12 @@ class HtmlDiff {
 		this.ignoreWhiteSpaceDifferences = false
 		this.orphanMatchThreshold = 0.0
 
+		// Initialize block-aware diffing if enabled
+		this.blockDiffOptions = options?.blockDiff
+		if (this.blockDiffOptions?.enabled) {
+			this.blockAnalyzer = new BlockAnalyzer(this.blockDiffOptions)
+		}
+
 		this.addBlockExpression = this.addBlockExpression.bind(this)
 	}
 
@@ -77,6 +94,18 @@ class HtmlDiff {
 		}
 
 		this.splitInputsIntoWords()
+
+		// If block-aware diffing is enabled, analyze blocks and handle block type changes
+		if (this.blockAnalyzer) {
+			this.oldBlocks = this.blockAnalyzer.findBlocks(this.oldWords)
+			this.newBlocks = this.blockAnalyzer.findBlocks(this.newWords)
+
+			// Check if we have block type mismatches that should be handled as full replacements
+			const blockTypeChanges = this.detectBlockTypeChanges()
+			if (blockTypeChanges.length > 0) {
+				return this.diffWithBlockTypeChanges(blockTypeChanges)
+			}
+		}
 
 		this.matchGranularity = Math.min(
 			MatchGranularityMaximum,
@@ -99,6 +128,106 @@ class HtmlDiff {
 		}
 
 		return this.content.join("")
+	}
+
+	/**
+	 * Detect pairs of blocks in old and new that have different types
+	 * Returns array of {oldBlock, newBlock} pairs that need block-level replacement
+	 */
+	private detectBlockTypeChanges(): { oldBlock: Block; newBlock: Block }[] {
+		if (!this.blockAnalyzer) return []
+
+		const changes: { oldBlock: Block; newBlock: Block }[] = []
+		const pairs = this.blockAnalyzer.matchBlocksByPosition(this.oldBlocks, this.newBlocks)
+
+		for (const pair of pairs) {
+			if (
+				pair.oldBlock &&
+				pair.newBlock &&
+				!this.blockAnalyzer.isSameBlockType(pair.oldBlock, pair.newBlock)
+			) {
+				changes.push({ oldBlock: pair.oldBlock, newBlock: pair.newBlock })
+			}
+		}
+
+		return changes
+	}
+
+	/**
+	 * Handle diffing when there are block type changes.
+	 * Blocks with type changes are shown as full del/ins pairs.
+	 * Other content uses standard word-level diffing.
+	 */
+	private diffWithBlockTypeChanges(
+		blockTypeChanges: { oldBlock: Block; newBlock: Block }[]
+	): string {
+		const result: string[] = []
+
+		// Track which ranges we've processed
+		let oldPos = 0
+		let newPos = 0
+
+		// Process content before, between, and after block type changes
+		for (const change of blockTypeChanges) {
+			// Process content before this block change
+			if (oldPos < change.oldBlock.startIndex || newPos < change.newBlock.startIndex) {
+				const beforeOldWords = this.oldWords.slice(oldPos, change.oldBlock.startIndex)
+				const beforeNewWords = this.newWords.slice(newPos, change.newBlock.startIndex)
+
+				if (beforeOldWords.length > 0 || beforeNewWords.length > 0) {
+					const beforeDiff = this.diffWordRanges(beforeOldWords, beforeNewWords)
+					result.push(beforeDiff)
+				}
+			}
+
+			// Output the block type change as del/ins
+			const oldBlockContent = this.oldWords
+				.slice(change.oldBlock.startIndex, change.oldBlock.endIndex + 1)
+				.join("")
+			const newBlockContent = this.newWords
+				.slice(change.newBlock.startIndex, change.newBlock.endIndex + 1)
+				.join("")
+
+			result.push(`<del class="diffdel">${oldBlockContent}</del>`)
+			result.push(`<ins class="diffins">${newBlockContent}</ins>`)
+
+			oldPos = change.oldBlock.endIndex + 1
+			newPos = change.newBlock.endIndex + 1
+		}
+
+		// Process any remaining content after the last block change
+		if (oldPos < this.oldWords.length || newPos < this.newWords.length) {
+			const afterOldWords = this.oldWords.slice(oldPos)
+			const afterNewWords = this.newWords.slice(newPos)
+
+			if (afterOldWords.length > 0 || afterNewWords.length > 0) {
+				const afterDiff = this.diffWordRanges(afterOldWords, afterNewWords)
+				result.push(afterDiff)
+			}
+		}
+
+		return result.join("")
+	}
+
+	/**
+	 * Diff two word arrays and return the HTML result
+	 */
+	private diffWordRanges(oldWords: string[], newWords: string[]): string {
+		if (oldWords.length === 0 && newWords.length === 0) {
+			return ""
+		}
+
+		// Create a mini-diff for these word ranges
+		const oldText = oldWords.join("")
+		const newText = newWords.join("")
+
+		if (oldText === newText) {
+			return newText
+		}
+
+		// Use a new HtmlDiff instance without block-aware diffing for sub-ranges
+		const subDiff = new HtmlDiff(oldText, newText)
+		return subDiff.diff()
 	}
 
 	addBlockExpression(exp: BlockExpression) {
@@ -150,8 +279,62 @@ class HtmlDiff {
 	}
 
 	processReplaceOperation(opp: Operation) {
-		this.processDeleteOperation(opp, "diffmod")
-		this.processInsertOperation(opp, "diffmod")
+		// Check if block-aware diffing applies to this operation
+		if (this.blockAnalyzer && this.shouldUseBlockReplacement(opp)) {
+			// Different block types - show as full block deletion/insertion
+			this.processDeleteOperation(opp, "diffdel")
+			this.processInsertOperation(opp, "diffins")
+		} else {
+			// Same block type or no blocks - use word-by-word diff
+			this.processDeleteOperation(opp, "diffmod")
+			this.processInsertOperation(opp, "diffmod")
+		}
+	}
+
+	/**
+	 * Determines if a replace operation should use block replacement
+	 * (full del/ins) instead of word-by-word diffing (diffmod).
+	 *
+	 * Returns true if:
+	 * - Block-aware diffing is enabled
+	 * - The operation involves different block-level element types
+	 */
+	private shouldUseBlockReplacement(opp: Operation): boolean {
+		if (!this.blockAnalyzer) {
+			return false
+		}
+
+		// Find blocks that overlap with the operation range (any overlap counts)
+		const oldBlocksInRange = this.oldBlocks.filter(
+			(b) => b.startIndex < opp.endInOld && b.endIndex >= opp.startInOld
+		)
+		const newBlocksInRange = this.newBlocks.filter(
+			(b) => b.startIndex < opp.endInNew && b.endIndex >= opp.startInNew
+		)
+
+		// If no blocks in either range, use regular word diff
+		if (oldBlocksInRange.length === 0 && newBlocksInRange.length === 0) {
+			return false
+		}
+
+		// If blocks exist in one but not the other, that's a structure change
+		if (oldBlocksInRange.length === 0 || newBlocksInRange.length === 0) {
+			return true
+		}
+
+		// If different number of blocks, use block replacement
+		if (oldBlocksInRange.length !== newBlocksInRange.length) {
+			return true
+		}
+
+		// Check if any paired blocks have different types
+		for (let i = 0; i < oldBlocksInRange.length; i++) {
+			if (!this.blockAnalyzer.isSameBlockType(oldBlocksInRange[i], newBlocksInRange[i])) {
+				return true
+			}
+		}
+
+		return false
 	}
 
 	processInsertOperation(opp: Operation, cssClass: string) {
