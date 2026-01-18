@@ -131,26 +131,138 @@ class HtmlDiff {
 	}
 
 	/**
-	 * Detect pairs of blocks in old and new that have different types
-	 * Returns array of {oldBlock, newBlock} pairs that need block-level replacement
+	 * Detect ranges of blocks in old and new that have different types.
+	 * Returns array of word index ranges that need block-level replacement.
 	 */
-	private detectBlockTypeChanges(): { oldBlock: Block; newBlock: Block }[] {
+	private detectBlockTypeChanges(): {
+		oldStart: number
+		oldEnd: number
+		newStart: number
+		newEnd: number
+	}[] {
 		if (!this.blockAnalyzer) return []
 
-		const changes: { oldBlock: Block; newBlock: Block }[] = []
-		const pairs = this.blockAnalyzer.matchBlocksByPosition(this.oldBlocks, this.newBlocks)
+		const changes: {
+			oldStart: number
+			oldEnd: number
+			newStart: number
+			newEnd: number
+		}[] = []
 
-		for (const pair of pairs) {
-			if (
-				pair.oldBlock &&
-				pair.newBlock &&
-				!this.blockAnalyzer.isSameBlockType(pair.oldBlock, pair.newBlock)
-			) {
-				changes.push({ oldBlock: pair.oldBlock, newBlock: pair.newBlock })
+		const matches = this.matchBlocksByTypeSimilarity()
+		const anchoredMatches = [
+			{ oldIndex: -1, newIndex: -1 },
+			...matches,
+			{ oldIndex: this.oldBlocks.length, newIndex: this.newBlocks.length }
+		]
+
+		for (let i = 0; i < anchoredMatches.length - 1; i++) {
+			const current = anchoredMatches[i]
+			const next = anchoredMatches[i + 1]
+			const oldRange = this.oldBlocks.slice(current.oldIndex + 1, next.oldIndex)
+			const newRange = this.newBlocks.slice(current.newIndex + 1, next.newIndex)
+
+			if (oldRange.length === 0 || newRange.length === 0) {
+				continue
+			}
+
+			let typesMatch = oldRange.length === newRange.length
+			if (typesMatch) {
+				for (let j = 0; j < oldRange.length; j++) {
+					if (!this.blockAnalyzer.isSameBlockType(oldRange[j], newRange[j])) {
+						typesMatch = false
+						break
+					}
+				}
+			}
+
+			if (!typesMatch) {
+				changes.push({
+					oldStart: oldRange[0].startIndex,
+					oldEnd: oldRange[oldRange.length - 1].endIndex,
+					newStart: newRange[0].startIndex,
+					newEnd: newRange[newRange.length - 1].endIndex
+				})
 			}
 		}
 
 		return changes
+	}
+
+	/**
+	 * Match blocks that appear to be the same logical unit.
+	 * Uses a weighted LCS based on block type and content length similarity.
+	 */
+	private matchBlocksByTypeSimilarity(): { oldIndex: number; newIndex: number }[] {
+		if (!this.blockAnalyzer) return []
+
+		const oldCount = this.oldBlocks.length
+		const newCount = this.newBlocks.length
+		const blockAnalyzer = this.blockAnalyzer
+		const oldLengths = this.oldBlocks.map(
+			(block) => blockAnalyzer.getBlockInnerWords(this.oldWords, block).join("").length
+		)
+		const newLengths = this.newBlocks.map(
+			(block) => blockAnalyzer.getBlockInnerWords(this.newWords, block).join("").length
+		)
+
+		const scoreForMatch = (oldIndex: number, newIndex: number) => {
+			const oldBlock = this.oldBlocks[oldIndex]
+			const newBlock = this.newBlocks[newIndex]
+			if (!oldBlock || !newBlock || !this.blockAnalyzer) {
+				return 0
+			}
+			if (!this.blockAnalyzer.isSameBlockType(oldBlock, newBlock)) {
+				return 0
+			}
+
+			const oldLength = oldLengths[oldIndex]
+			const newLength = newLengths[newIndex]
+			const maxLength = Math.max(oldLength, newLength)
+			if (maxLength === 0) {
+				return 100
+			}
+
+			const diffRatio = Math.abs(oldLength - newLength) / maxLength
+			return 100 - Math.round(diffRatio * 100)
+		}
+
+		const dp: number[][] = Array.from({ length: oldCount + 1 }, () =>
+			Array(newCount + 1).fill(0)
+		)
+
+		for (let i = oldCount - 1; i >= 0; i--) {
+			for (let j = newCount - 1; j >= 0; j--) {
+				const matchScore = scoreForMatch(i, j)
+				const skipOld = dp[i + 1][j]
+				const skipNew = dp[i][j + 1]
+				const takeMatch = matchScore > 0 ? dp[i + 1][j + 1] + matchScore : 0
+
+				dp[i][j] = Math.max(skipOld, skipNew, takeMatch)
+			}
+		}
+
+		const matches: { oldIndex: number; newIndex: number }[] = []
+		let i = 0
+		let j = 0
+
+		while (i < oldCount && j < newCount) {
+			const matchScore = scoreForMatch(i, j)
+			if (matchScore > 0 && dp[i][j] === dp[i + 1][j + 1] + matchScore) {
+				matches.push({ oldIndex: i, newIndex: j })
+				i++
+				j++
+				continue
+			}
+
+			if (dp[i + 1][j] >= dp[i][j + 1]) {
+				i++
+			} else {
+				j++
+			}
+		}
+
+		return matches
 	}
 
 	/**
@@ -159,7 +271,12 @@ class HtmlDiff {
 	 * Other content uses standard word-level diffing.
 	 */
 	private diffWithBlockTypeChanges(
-		blockTypeChanges: { oldBlock: Block; newBlock: Block }[]
+		blockTypeChanges: {
+			oldStart: number
+			oldEnd: number
+			newStart: number
+			newEnd: number
+		}[]
 	): string {
 		const result: string[] = []
 
@@ -170,9 +287,9 @@ class HtmlDiff {
 		// Process content before, between, and after block type changes
 		for (const change of blockTypeChanges) {
 			// Process content before this block change
-			if (oldPos < change.oldBlock.startIndex || newPos < change.newBlock.startIndex) {
-				const beforeOldWords = this.oldWords.slice(oldPos, change.oldBlock.startIndex)
-				const beforeNewWords = this.newWords.slice(newPos, change.newBlock.startIndex)
+			if (oldPos < change.oldStart || newPos < change.newStart) {
+				const beforeOldWords = this.oldWords.slice(oldPos, change.oldStart)
+				const beforeNewWords = this.newWords.slice(newPos, change.newStart)
 
 				if (beforeOldWords.length > 0 || beforeNewWords.length > 0) {
 					const beforeDiff = this.diffWordRanges(beforeOldWords, beforeNewWords)
@@ -182,17 +299,17 @@ class HtmlDiff {
 
 			// Output the block type change as del/ins
 			const oldBlockContent = this.oldWords
-				.slice(change.oldBlock.startIndex, change.oldBlock.endIndex + 1)
+				.slice(change.oldStart, change.oldEnd + 1)
 				.join("")
 			const newBlockContent = this.newWords
-				.slice(change.newBlock.startIndex, change.newBlock.endIndex + 1)
+				.slice(change.newStart, change.newEnd + 1)
 				.join("")
 
 			result.push(`<del class="diffdel">${oldBlockContent}</del>`)
 			result.push(`<ins class="diffins">${newBlockContent}</ins>`)
 
-			oldPos = change.oldBlock.endIndex + 1
-			newPos = change.newBlock.endIndex + 1
+			oldPos = change.oldEnd + 1
+			newPos = change.newEnd + 1
 		}
 
 		// Process any remaining content after the last block change
