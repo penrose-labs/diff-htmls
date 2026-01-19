@@ -65,6 +65,45 @@ describe("Block-aware diffing", () => {
 				expect(result).not.toContain("diffmod")
 			})
 
+			it("keeps block replacement when list becomes paragraph", () => {
+				const oldHtml =
+					"<h2>Objective</h2><ul><li>Blood pressure 118/76 mmHg; heart rate 72 bpm.</li><li>Neurologic exam: Pupils equal and reactive.</li></ul><p>Ensure adequate hydulation.</p>"
+				const newHtml =
+					"<h2>Objective</h2><p>Blood pressure 118/76 mmHg; heart rate 72 bpm. Neurologic exam: Pupils equal and reactive.</p><p>Ensure adequate hydration.</p>"
+
+				const result = diff(oldHtml, newHtml, { blockDiff: blockDiffOptions })
+				const expected =
+					'<h2>Objective</h2><del class="diffdel"><ul><li>Blood pressure 118/76 mmHg; heart rate 72 bpm.</li><li>Neurologic exam: Pupils equal and reactive.</li></ul></del><ins class="diffins"><p>Blood pressure 118/76 mmHg; heart rate 72 bpm. Neurologic exam: Pupils equal and reactive.</p></ins><p>Ensure adequate <del class="diffmod">hydulation</del><ins class="diffmod">hydration</ins>.</p>'
+
+				expect(result).toBe(expected)
+			})
+
+			it("wraps full blocks when list becomes paragraphs", () => {
+				const oldHtml =
+					"<h2>Subjective</h2><ul><li>Headache for two weeks.</li><li>Bright lights exacerbate symptoms.</li><li>Work stress reported.</li><li>History of anxiety.</li></ul><h2>Objective</h2><p>Vitals stable.</p>"
+				const newHtml =
+					"<h2>Subjective</h2><p>Headache for two weeks. Bright lights exacerbate symptoms. Work stress reported.</p><p>History of anxiety.</p><h2>Objective</h2><p>Vitals stable.</p>"
+
+				const result = diff(oldHtml, newHtml, { blockDiff: blockDiffOptions })
+				const expected =
+					'<h2>Subjective</h2><del class="diffdel"><ul><li>Headache for two weeks.</li><li>Bright lights exacerbate symptoms.</li><li>Work stress reported.</li><li>History of anxiety.</li></ul></del><ins class="diffins"><p>Headache for two weeks. Bright lights exacerbate symptoms. Work stress reported.</p><p>History of anxiety.</p></ins><h2>Objective</h2><p>Vitals stable.</p>'
+
+				expect(result).toBe(expected)
+			})
+
+			it("keeps block replacement when list becomes paragraph", () => {
+				const oldHtml =
+					"<h2>Objective</h2><ul><li>Blood pressure 118/76 mmHg; heart rate 72 bpm.</li><li>Neurologic exam: Pupils equal and reactive.</li></ul><p>Ensure adequate hydulation.</p>"
+				const newHtml =
+					"<h2>Objective</h2><p>Blood pressure 118/76 mmHg; heart rate 72 bpm. Neurologic exam: Pupils equal and reactive.</p><p>Ensure adequate hydration.</p>"
+
+				const result = diff(oldHtml, newHtml, { blockDiff: blockDiffOptions })
+				const expected =
+					'<h2>Objective</h2><del class="diffdel"><ul><li>Blood pressure 118/76 mmHg; heart rate 72 bpm.</li><li>Neurologic exam: Pupils equal and reactive.</li></ul></del><ins class="diffins"><p>Blood pressure 118/76 mmHg; heart rate 72 bpm. Neurologic exam: Pupils equal and reactive.</p></ins><p>Ensure adequate <del class="diffmod">hydulation</del><ins class="diffmod">hydration</ins>.</p>'
+
+				expect(result).toBe(expected)
+			})
+
 			it("shows block replacement for ol -> p", () => {
 				const oldHtml = "<ol><li>Step one</li><li>Step two</li></ol>"
 				const newHtml = "<p>Follow these steps.</p>"
@@ -151,6 +190,33 @@ describe("Block-aware diffing", () => {
 	})
 
 	describe("edge cases", () => {
+		it("handles inserted block without reordering", () => {
+			const oldHtml = "<h2>Subjective</h2><p>[Chief complaint]</p>"
+			const newHtml =
+				"<p><strong>Provider:</strong> Ashank</p><h2>Subjective</h2><p>[Chief complaint]</p>"
+
+			const result = diff(oldHtml, newHtml, { blockDiff: { enabled: true } })
+
+			expect(result).toContain("diffins")
+			expect(result).toContain("Provider:")
+			expect(result).toContain("<h2>Subjective</h2>")
+			expect(result).not.toContain("diffdel")
+		})
+
+		it("handles inserted block between headings", () => {
+			const oldHtml =
+				"<h2>Subjective</h2><p>[Chief complaint]</p><h2>Objective</h2><p>[Vitals]</p>"
+			const newHtml =
+				"<h2>Subjective</h2><p>[Chief complaint]</p><p><strong>Provider:</strong> Ashank</p><h2>Objective</h2><p>[Vitals]</p>"
+
+			const result = diff(oldHtml, newHtml, { blockDiff: { enabled: true } })
+
+			expect(result).toContain("diffins")
+			expect(result).toContain("Provider:")
+			expect(result).toContain("<h2>Objective</h2>")
+			expect(result).not.toContain("diffdel")
+		})
+
 		it("handles empty blocks", () => {
 			const oldHtml = "<p></p>"
 			const newHtml = "<div></div>"
